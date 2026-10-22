@@ -87,6 +87,29 @@ export default Plugin.define({
       log("context injection hook registered")
     }
 
+    // --- Per-prompt memory recall (Claude Code UserPromptSubmit equivalent) ---
+    // kratos's own gating applies inside the CLI: prompts under 12 chars,
+    // slash commands, and sub-threshold matches produce no output.
+    if (opts.recall) {
+      registrations.push(
+        await ctx.session.hook("prompt", (event) =>
+          wrap(async () => {
+            const kratos = await kratosPromise
+            if (!kratos) return
+            const text = event.prompt.text
+            if (typeof text !== "string" || text.length === 0) return
+            const cwd = await sessionCwd(ctx.session.get, event.sessionID)
+            if (!cwd) return
+            const recall = await kratos.capture("user-prompt", { prompt: text }, { cwd })
+            if (recall.length > 0) {
+              event.prompt.text = `${text}\n\n<kratos-recall>\n${recall}\n</kratos-recall>`
+            }
+          }),
+        ),
+      )
+      log("prompt recall hook registered")
+    }
+
     return async () => {
       for (const registration of registrations) {
         await registration.dispose()

@@ -153,3 +153,65 @@ test("sessionCwd returns undefined on failure or missing location", async () => 
   assert.equal(await sessionCwd(async () => { throw new Error("nope") }, "s1"), undefined)
   assert.equal(await sessionCwd(async () => ({ nope: true }), "s1"), undefined)
 })
+
+async function firePrompt(sessionHooks: Map<string, HookCb[]>, sessionID: string, text: string) {
+  const event = {
+    sessionID,
+    prompt: { text },
+    metadata: {},
+    delivery: "steer",
+  }
+  for (const cb of sessionHooks.get("prompt") ?? []) await cb(event)
+  return event
+}
+
+test("setup registers the prompt hook with default options", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  assert.equal(sessionHooks.get("prompt")?.length, 1)
+})
+
+test("prompt hook appends the recall block to the prompt text", async () => {
+  const recallText = "Kratos recall — saved memories relevant to this prompt:\n- JWT auth…"
+  __setKratosForTests(fakeKratos({ capture: async () => recallText }).client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  const event = await firePrompt(sessionHooks, "s1", "how does auth work?")
+  assert.equal(
+    event.prompt.text,
+    "how does auth work?" + "\n\n<kratos-recall>\n" + recallText + "\n</kratos-recall>",
+  )
+})
+
+test("silent capture leaves the prompt text byte-identical", async () => {
+  __setKratosForTests(fakeKratos({ capture: async () => "" }).client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  const event = await firePrompt(sessionHooks, "s1", "how does auth work?")
+  assert.equal(event.prompt.text, "how does auth work?")
+})
+
+test("capture rejection leaves the prompt text unchanged without throwing", async () => {
+  __setKratosForTests(fakeKratos({ capture: async () => Promise.reject(new Error("boom")) }).client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  const event = await firePrompt(sessionHooks, "s1", "how does auth work?")
+  assert.equal(event.prompt.text, "how does auth work?")
+})
+
+test("recall: false disables prompt hook registration", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, sessionHooks } = makeCtx({ recall: false })
+  await pluginDefault.setup(ctx)
+  assert.equal(sessionHooks.get("prompt"), undefined)
+})
+
+test("session.get throwing leaves the prompt text unchanged without throwing", async () => {
+  __setKratosForTests(fakeKratos({ capture: async () => "recall!" }).client)
+  const { ctx, sessionHooks } = makeCtx()
+  ctx.session.get = async () => { throw new Error("no session") }
+  await pluginDefault.setup(ctx)
+  const event = await firePrompt(sessionHooks, "s1", "how does auth work?")
+  assert.equal(event.prompt.text, "how does auth work?")
+})
