@@ -65,6 +65,19 @@ export default Plugin.define({
     const stateDir = stateDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos")
     const log = createDebugLogger(opts.debug, stateDir)
 
+    // TEMPORARY PROBE (diagnosing options delivery) — remove before publish.
+    try {
+      const fs = await import("node:fs")
+      fs.mkdirSync(stateDir, { recursive: true })
+      fs.appendFileSync(
+        path.join(stateDir, "options-probe.log"),
+        `[probe] raw=${JSON.stringify(ctx.options)} resolved=${JSON.stringify(opts)}\n`,
+        "utf-8",
+      )
+    } catch {
+      // probe is best effort
+    }
+
     // Resolve kratos in the background: server startup must not block on the
     // probe (npx can take up to 60s on a cold cache). Hook handlers await
     // this promise, bounded by the probe timeouts inside resolveKratos.
