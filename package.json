@@ -1,0 +1,38 @@
+{
+  "name": "opencode-kratos",
+  "version": "0.1.0",
+  "description": "Persistent kratos-memory integration for OpenCode — context injection, per-prompt recall, auto-capture, session summaries",
+  "type": "module",
+  "license": "MIT",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "node --test test/",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "opencode",
+    "opencode-plugin",
+    "kratos",
+    "memory",
+    "ai-agents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MisterAssm/opencode-kratos.git"
+  },
+  "dependencies": {
+    "@opencode/plugin": "^2.1.2"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  }
+}
