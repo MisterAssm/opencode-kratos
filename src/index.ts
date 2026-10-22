@@ -197,6 +197,8 @@ export default Plugin.define({
       void (async () => {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            // TEMPORARY SPY (diagnosing event delivery) — remove before publish.
+            log(`event: ${(event as { type?: string }).type}`)
             if ((event as { type?: string }).type !== "session.idle") continue
             const sessionID = (event as { data?: { sessionID?: unknown } }).data?.sessionID
             if (typeof sessionID !== "string") continue
@@ -236,6 +238,8 @@ export default Plugin.define({
     )
 
     return async () => {
+      // TEMPORARY SPY (diagnosing cleanup delivery) — remove before publish.
+      log("plugin cleanup invoked")
       await cleanupSummary?.()
       for (const registration of registrations) {
         await registration.dispose()
