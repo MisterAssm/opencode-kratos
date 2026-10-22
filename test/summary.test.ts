@@ -3,11 +3,30 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync, utimesSync, existsSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import { FlushScheduler, lockPathFor, tryAcquireLock, releaseLock } from "../src/summary.ts"
+import { FlushScheduler, lockPathFor, tryAcquireLock, releaseLock, flushTriggerSessionID } from "../src/summary.ts"
 
 function tempDir(): string {
   return mkdtempSync(path.join(tmpdir(), "kratos-summary-test-"))
 }
+
+test("flushTriggerSessionID accepts session.idle events", () => {
+  assert.equal(flushTriggerSessionID({ type: "session.idle", data: { sessionID: "ses_1" } }), "ses_1")
+})
+
+test("flushTriggerSessionID accepts execution-completion events (headless runs never emit session.idle)", () => {
+  for (const type of ["session.execution.succeeded", "session.execution.failed", "session.execution.interrupted"]) {
+    assert.equal(flushTriggerSessionID({ type, data: { sessionID: "ses_2" } }), "ses_2", type)
+  }
+})
+
+test("flushTriggerSessionID rejects unrelated events, malformed payloads, and non-objects", () => {
+  assert.equal(flushTriggerSessionID({ type: "session.step.started", data: { sessionID: "ses_3" } }), undefined)
+  assert.equal(flushTriggerSessionID({ type: "session.idle" }), undefined)
+  assert.equal(flushTriggerSessionID({ type: "session.idle", data: {} }), undefined)
+  assert.equal(flushTriggerSessionID({ type: "session.idle", data: { sessionID: 42 } }), undefined)
+  assert.equal(flushTriggerSessionID(null), undefined)
+  assert.equal(flushTriggerSessionID("session.idle"), undefined)
+})
 
 test("tryAcquireLock acquires a free path and blocks a second immediate attempt", () => {
   const dir = tempDir()

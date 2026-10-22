@@ -5,7 +5,7 @@ import { resolveOptions } from "./config.ts"
 import { resolveKratos } from "./kratos.ts"
 import type { Kratos } from "./kratos.ts"
 import { translateToolEvent } from "./translate.ts"
-import { FlushScheduler } from "./summary.ts"
+import { FlushScheduler, flushTriggerSessionID } from "./summary.ts"
 import { memoryCommandPrompt } from "./command.ts"
 import { createDebugLogger } from "./log.ts"
 
@@ -64,19 +64,6 @@ export default Plugin.define({
     // file under the plugin state dir instead.
     const stateDir = stateDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos")
     const log = createDebugLogger(opts.debug, stateDir)
-
-    // TEMPORARY PROBE (diagnosing options delivery) — remove before publish.
-    try {
-      const fs = await import("node:fs")
-      fs.mkdirSync(stateDir, { recursive: true })
-      fs.appendFileSync(
-        path.join(stateDir, "options-probe.log"),
-        `[probe] raw=${JSON.stringify(ctx.options)} resolved=${JSON.stringify(opts)}\n`,
-        "utf-8",
-      )
-    } catch {
-      // probe is best effort
-    }
 
     // Resolve kratos in the background: server startup must not block on the
     // probe (npx can take up to 60s on a cold cache). Hook handlers await
@@ -197,11 +184,8 @@ export default Plugin.define({
       void (async () => {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
-            // TEMPORARY SPY (diagnosing event delivery) — remove before publish.
-            log(`event: ${(event as { type?: string }).type}`)
-            if ((event as { type?: string }).type !== "session.idle") continue
-            const sessionID = (event as { data?: { sessionID?: unknown } }).data?.sessionID
-            if (typeof sessionID !== "string") continue
+            const sessionID = flushTriggerSessionID(event)
+            if (sessionID === undefined) continue
             const cwd = await sessionCwd(ctx.session.get, sessionID)
             if (cwd) scheduler.onIdle(sessionID, cwd)
           }
@@ -238,8 +222,6 @@ export default Plugin.define({
     )
 
     return async () => {
-      // TEMPORARY SPY (diagnosing cleanup delivery) — remove before publish.
-      log("plugin cleanup invoked")
       await cleanupSummary?.()
       for (const registration of registrations) {
         await registration.dispose()

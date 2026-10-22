@@ -7,6 +7,27 @@ const STALE_LOCK_MS = 60_000
 /** What triggered a session-summary flush. */
 export type FlushSource = "idle" | "compaction" | "cleanup"
 
+/** Event types that mark a session as quiet — the trigger to arm a flush.
+ * `session.idle` covers interactive sessions; execution completion
+ * (succeeded / failed / interrupted) covers headless `opencode run` sessions,
+ * which never emit `session.idle`. */
+const FLUSH_TRIGGER_TYPES = new Set([
+  "session.idle",
+  "session.execution.succeeded",
+  "session.execution.failed",
+  "session.execution.interrupted",
+])
+
+/** Returns the sessionID when the event marks a session as quiet (arm the
+ * debounced flush), undefined otherwise. Tolerates any malformed payload. */
+export function flushTriggerSessionID(event: unknown): string | undefined {
+  if (typeof event !== "object" || event === null) return undefined
+  const e = event as { type?: unknown; data?: { sessionID?: unknown } }
+  if (typeof e.type !== "string" || !FLUSH_TRIGGER_TYPES.has(e.type)) return undefined
+  const sessionID = e.data?.sessionID
+  return typeof sessionID === "string" ? sessionID : undefined
+}
+
 /** Lock file path for a project directory: lockDir/<sha256(cwd) truncated>.lock */
 export function lockPathFor(lockDir: string, cwd: string): string {
   const hash = createHash("sha256").update(cwd).digest("hex").slice(0, 32)
