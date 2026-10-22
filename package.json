@@ -1,6 +1,6 @@
 {
   "name": "opencode-kratos",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Persistent kratos-memory integration for OpenCode — context injection, per-prompt recall, auto-capture, session summaries",
   "type": "module",
   "license": "MIT",
