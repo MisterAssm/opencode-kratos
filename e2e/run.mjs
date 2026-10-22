@@ -12,7 +12,7 @@
 // Set KEEP=1 to keep the temp project for inspection.
 
 import { spawnSync } from "node:child_process"
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs"
+import { mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 
@@ -35,12 +35,17 @@ function bad(msg) {
 }
 
 function run(cmd, args, opts = {}) {
+  const cwd = opts.cwd ?? REPO_ROOT
   return spawnSync(cmd, args, {
-    cwd: opts.cwd ?? REPO_ROOT,
+    cwd,
     encoding: "utf-8",
     timeout: opts.timeoutMs ?? 180_000,
     stdio: opts.capture ? ["ignore", "pipe", "pipe"] : "inherit",
-    env: process.env,
+    // OpenCode resolves its project directory from the PWD (and npm's
+    // INIT_CWD) environment variables rather than the process cwd. Both must
+    // match the intended project, or a standalone server booted with
+    // cwd=tempdir silently runs in the directory npm was invoked from.
+    env: { ...process.env, PWD: cwd, INIT_CWD: cwd },
   })
 }
 
@@ -66,6 +71,26 @@ function readDebugLog() {
     return readFileSync(PLUGIN_DEBUG_LOG, "utf-8")
   } catch {
     return ""
+  }
+}
+
+/** Fails when a standalone server booted outside the temp project (PWD leak). */
+function assertBootedInProject(logSlice, phase, projectDir) {
+  const real = realpathSync(projectDir)
+  const boots = [...logSlice.matchAll(/"location services booted" directory=([^ ]+)/g)].map((m) => m[1])
+  if (boots.includes(real)) {
+    ok(`${phase}: standalone server booted in the temp project`)
+  } else {
+    bad(`${phase}: standalone server booted in ${boots[0] ?? "(no boot line found)"} instead of ${real}`)
+  }
+}
+
+/** Fails when the plugin did not load through the git-spec package entry. */
+function assertPluginLoadedViaSpec(logSlice, phase) {
+  if (logSlice.includes(`"loading plugin" id=${PLUGIN_SPEC}`)) {
+    ok(`${phase}: plugin loaded via git-spec package entry`)
+  } else {
+    bad(`${phase}: git-spec plugin entry never loaded — project config not read or install failed`)
   }
 }
 
@@ -135,6 +160,9 @@ if (recallRun.status !== 0) {
 const recallOut = `${recallRun.stdout}\n${recallRun.stderr}`
 const recallLog = logTailSince(logSizeBeforeRecall)
 
+assertBootedInProject(recallLog, "recall", projectDir)
+assertPluginLoadedViaSpec(recallLog, "recall")
+
 console.log("[e2e] model answer:")
 console.log(
   recallRun.stdout
@@ -194,6 +222,9 @@ if (captureRun.status !== 0) {
 }
 const captureOut = `${captureRun.stdout}\n${captureRun.stderr}`
 const captureLog = logTailSince(logSizeBeforeCapture)
+
+assertBootedInProject(captureLog, "capture", projectDir)
+assertPluginLoadedViaSpec(captureLog, "capture")
 
 // Which flush source fired? (idle / cleanup / compaction)
 const captureDebugLog = readDebugLog()
