@@ -6,6 +6,7 @@ import { resolveKratos } from "./kratos.ts"
 import type { Kratos } from "./kratos.ts"
 import { translateToolEvent } from "./translate.ts"
 import { FlushScheduler } from "./summary.ts"
+import { memoryCommandPrompt } from "./command.ts"
 
 const CONTEXT_CACHE_MAX = 100
 
@@ -195,6 +196,25 @@ export default Plugin.define({
       }
       log("session summary scheduler armed")
     }
+
+    // --- /memory command ---
+    // Not gated by a feature flag: it only runs when the user invokes it.
+    registrations.push(
+      await ctx.command.transform((editor) => {
+        editor.add({
+          name: "memory",
+          description: "Review kratos project memory (status + recent)",
+          execute: async ({ sessionID, prompt, delivery }) => {
+            await ctx.session.prompt({
+              sessionID,
+              ...prompt,
+              text: memoryCommandPrompt(),
+              delivery,
+            })
+          },
+        })
+      }),
+    )
 
     return async () => {
       await cleanupSummary?.()

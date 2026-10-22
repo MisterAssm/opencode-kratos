@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import pluginDefault, { __setKratosForTests, __setLockDirForTests, sessionCwd, wrap } from "../src/index.ts"
+import { memoryCommandPrompt } from "../src/command.ts"
 import type { Kratos } from "../src/kratos.ts"
 
 type HookCb = (event: any) => Promise<void> | void
@@ -11,6 +12,8 @@ type HookCb = (event: any) => Promise<void> | void
 function makeCtx(options: Record<string, unknown> = {}) {
   const sessionHooks = new Map<string, HookCb[]>()
   const toolHooks = new Map<string, HookCb[]>()
+  const commands: any[] = []
+  const promptCalls: any[] = []
   const eventQueue: any[] = []
   let wake: (() => void) | null = null
   const pushEvent = (event: any) => {
@@ -36,6 +39,9 @@ function makeCtx(options: Record<string, unknown> = {}) {
         return { dispose: async () => {} }
       },
       get: async (_input: { sessionID: string }) => ({ location: { directory: "/proj" } }),
+      prompt: async (input: unknown) => {
+        promptCalls.push(input)
+      },
     },
     tool: {
       hook: async (name: string, cb: HookCb) => {
@@ -45,10 +51,19 @@ function makeCtx(options: Record<string, unknown> = {}) {
         return { dispose: async () => {} }
       },
     },
-    command: { transform: async () => ({ dispose: async () => {} }) },
+    command: {
+      transform: async (cb: (editor: unknown) => void) => {
+        await cb({
+          add: (definition: unknown) => {
+            commands.push(definition)
+          },
+        })
+        return { dispose: async () => {} }
+      },
+    },
     event: { subscribe: (_opts?: unknown) => eventStream() },
   }
-  return { ctx: ctx as any, sessionHooks, toolHooks, pushEvent }
+  return { ctx: ctx as any, sessionHooks, toolHooks, pushEvent, commands, promptCalls }
 }
 
 function fakeKratos(behavior?: {
@@ -417,5 +432,40 @@ test("cleanup flushes armed sessions instead of dropping them", async () => {
     await flush(20)
     assert.equal(fake.captureCalls.length, 1)
     assert.equal(fake.captureCalls[0].event, "session-end")
+  })
+})
+
+test("memoryCommandPrompt returns the pinned text", () => {
+  assert.equal(
+    memoryCommandPrompt(),
+    "Check the project memory with the shell tool: run `npx kratos-memory status` and `npx kratos-memory recent --limit 10`, then summarize the memory state in a short bullet list: total memories, most recent work, and any pinned decisions.",
+  )
+})
+
+test("setup registers a /memory command via command.transform", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, commands } = makeCtx()
+  await pluginDefault.setup(ctx)
+  assert.equal(commands.length, 1)
+  assert.equal(commands[0].name, "memory")
+  assert.equal(commands[0].description, "Review kratos project memory (status + recent)")
+  assert.equal(typeof commands[0].execute, "function")
+})
+
+test("/memory execute prompts the session with the memory command text", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, commands, promptCalls } = makeCtx()
+  await pluginDefault.setup(ctx)
+  await commands[0].execute({
+    sessionID: "s1",
+    prompt: { text: "/memory", files: [] },
+    delivery: "steer",
+  })
+  assert.equal(promptCalls.length, 1)
+  assert.deepEqual(promptCalls[0], {
+    sessionID: "s1",
+    text: memoryCommandPrompt(),
+    files: [],
+    delivery: "steer",
   })
 })
