@@ -64,6 +64,34 @@ function logTailSince(size) {
   }
 }
 
+// The default (free-tier) model exhausts its quota quickly ("Free usage limit
+// reached" kills runs mid- or pre-answer). Try the default first, then fall
+// back to other models until one does its job. Override with E2E_MODELS="p/m1,p/m2".
+const MODEL_CHAIN = [
+  undefined,
+  ...(process.env.E2E_MODELS ?? "opencode/glm-5.3-flash-free,opencode/minimax-m3.1-flash-free")
+    .split(",")
+    .filter((m) => m.length > 0),
+]
+
+/** Runs `opencode run`, retrying across the model chain until isGood(run). */
+function runOpencode(prompt, opts, isGood) {
+  let last
+  for (const model of MODEL_CHAIN) {
+    const args = ["run", "--standalone"]
+    if (opts.printLogs) args.push("--print-logs")
+    if (model) args.push("-m", model)
+    args.push(prompt)
+    const r = run("opencode", args, { cwd: opts.cwd, timeoutMs: opts.timeoutMs, capture: true })
+    if (isGood(r)) return r
+    last = r
+    if (model !== MODEL_CHAIN.at(-1)) {
+      console.log(`  · attempt with ${model ?? "the default model"} not good enough (exit ${r.status}) — trying the next model`)
+    }
+  }
+  return last
+}
+
 /** Reads the plugin's debug log ("" when absent — e.g. debug: false). */
 function readDebugLog() {
   try {
@@ -158,13 +186,13 @@ ok("canary memory saved")
 // --- 4. Recall phase -----------------------------------------------------------
 console.log("[e2e] phase 1: recall — asking about the canary fact")
 const logSizeBeforeRecall = statSync(OPENCODE_LOG).size
-const recallRun = run(
-  "opencode",
-  ["run", "--standalone", "--print-logs", "What is the SSH key rotation policy for deploys?"],
-  { cwd: projectDir, timeoutMs: 240_000, capture: true },
-)
+const recallRun = runOpencode("What is the SSH key rotation policy for deploys?", {
+  cwd: projectDir,
+  timeoutMs: 240_000,
+  printLogs: true,
+}, (r) => r.status === 0)
 if (recallRun.status !== 0) {
-  console.error(`[e2e] FAIL: opencode run (recall) exited ${recallRun.status}\n${recallRun.stderr}`)
+  console.error(`[e2e] FAIL: opencode run (recall) exited ${recallRun.status} on every model in the chain\n${recallRun.stderr}`)
   process.exit(1)
 }
 const recallOut = `${recallRun.stdout}\n${recallRun.stderr}`
@@ -221,13 +249,13 @@ if (recallInjected || canaryInAnswer || canaryInPrompt) {
 // --- 5. Capture/summary phase --------------------------------------------------
 console.log("[e2e] phase 2: capture — creating a file through the agent")
 const logSizeBeforeCapture = statSync(OPENCODE_LOG).size
-const captureRun = run(
-  "opencode",
-  ["run", "--standalone", "Create a file named hello.txt containing the word hi"],
-  { cwd: projectDir, timeoutMs: 240_000, capture: true },
+const captureRun = runOpencode(
+  "Create a file named hello.txt containing the word hi",
+  { cwd: projectDir, timeoutMs: 240_000 },
+  (r) => r.status === 0 || existsSync(path.join(projectDir, "hello.txt")),
 )
 const captureHelloExists = existsSync(path.join(projectDir, "hello.txt"))
-if (captureRun.status !== 0 && !captureHelloExists) {
+if (!captureHelloExists) {
   console.error(`[e2e] FAIL: opencode run (capture) exited ${captureRun.status} and hello.txt was not created\n${captureRun.stderr}`)
   process.exit(1)
 }
