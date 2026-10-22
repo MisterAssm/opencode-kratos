@@ -51,6 +51,24 @@ test("tryAcquireLock takes over a lock that is older than the staleness threshol
   rmSync(dir, { recursive: true, force: true })
 })
 
+test("default staleness threshold is ~10s: a lock from a dead holder stops blocking the next flush quickly", () => {
+  const dir = tempDir()
+  const lockPath = path.join(dir, "default-stale.lock")
+  assert.equal(tryAcquireLock(lockPath, Date.now()), true)
+  // 9s old — still fresh under the default threshold → held
+  const nineSecondsAgo = new Date(Date.now() - 9_000)
+  utimesSync(lockPath, nineSecondsAgo, nineSecondsAgo)
+  assert.equal(tryAcquireLock(lockPath, Date.now()), false)
+  // 11s old — stale under the default threshold → taken over. A flush holds
+  // the lock for at most ~6s (5s capture-wait cap + spawn), so this cannot
+  // steal a live holder's lock, but recovers from a crashed one fast.
+  const elevenSecondsAgo = new Date(Date.now() - 11_000)
+  utimesSync(lockPath, elevenSecondsAgo, elevenSecondsAgo)
+  assert.equal(tryAcquireLock(lockPath, Date.now()), true)
+  releaseLock(lockPath)
+  rmSync(dir, { recursive: true, force: true })
+})
+
 test("lockPathFor produces distinct paths per cwd", () => {
   assert.notEqual(lockPathFor("/locks", "/a"), lockPathFor("/locks", "/b"))
 })
@@ -135,6 +153,46 @@ test("flushNow skips silently when the lock is already held", async () => {
   assert.equal(flushes.length, 0)
   releaseLock(lockPathFor(dir, "/p"))
   rmSync(dir, { recursive: true, force: true })
+})
+
+test("flushNow reports a lock skip via onLockSkip and does not flush", async () => {
+  const dir = tempDir()
+  const flushes: string[] = []
+  const skips: { sessionID: string; cwd: string }[] = []
+  const scheduler = new FlushScheduler({
+    debounceMs: 0,
+    lockDir: dir,
+    onFlush: async (sessionID) => {
+      flushes.push(sessionID)
+    },
+    onLockSkip: (sessionID, cwd) => {
+      skips.push({ sessionID, cwd })
+    },
+  })
+  assert.equal(tryAcquireLock(lockPathFor(dir, "/p"), Date.now()), true)
+  await scheduler.flushNow("s2", "/p", "idle")
+  assert.equal(flushes.length, 0)
+  assert.deepEqual(skips, [{ sessionID: "s2", cwd: "/p" }])
+  releaseLock(lockPathFor(dir, "/p"))
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test("onLockSkip is not called when the lock is acquired freely", async () => {
+  const flushes: string[] = []
+  const skips: string[] = []
+  const scheduler = new FlushScheduler({
+    debounceMs: 0,
+    lockDir: tempDir(),
+    onFlush: async (sessionID) => {
+      flushes.push(sessionID)
+    },
+    onLockSkip: (sessionID) => {
+      skips.push(sessionID)
+    },
+  })
+  await scheduler.flushNow("s1", "/free", "idle")
+  assert.equal(flushes.length, 1)
+  assert.equal(skips.length, 0)
 })
 
 test("flushPending flushes every armed session with the given source", async () => {

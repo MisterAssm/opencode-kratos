@@ -2,7 +2,12 @@ import { closeSync, mkdirSync, openSync, rmSync, statSync } from "node:fs"
 import { createHash } from "node:crypto"
 import path from "node:path"
 
-const STALE_LOCK_MS = 60_000
+/** A flush holds the project lock for at most ~6s (5s capture-wait cap plus
+ * the spawn itself), so a lock older than this can only belong to a crashed
+ * holder. Keeping the threshold tight lets the next flush recover quickly
+ * from a holder that died mid-flush (e.g. the OpenCode server shutting down
+ * right after a headless run). */
+const STALE_LOCK_MS = 10_000
 
 /** What triggered a session-summary flush. */
 export type FlushSource = "idle" | "compaction" | "cleanup"
@@ -77,6 +82,9 @@ export interface FlushSchedulerOptions {
   lockDir: string
   /** Invoked at most once per idle window per session, under the project lock. */
   onFlush: (sessionID: string, cwd: string, source: FlushSource) => Promise<void>
+  /** Invoked when a flush is skipped because another instance holds the
+   * project lock (visibility — the skip itself is by design). Optional. */
+  onLockSkip?: (sessionID: string, cwd: string) => void
   /** Injectable clock for tests. Defaults to Date.now. */
   now?: () => number
 }
@@ -107,8 +115,8 @@ export class FlushScheduler {
     this.timers.set(sessionID, timer)
   }
 
-  /** Runs one lock-guarded flush. Skips silently when another instance holds
-   * the project lock. Never throws. */
+  /** Runs one lock-guarded flush. Skips (with an optional report via
+   * onLockSkip) when another instance holds the project lock. Never throws. */
   async flushNow(sessionID: string, cwd: string, source: FlushSource): Promise<void> {
     try {
       mkdirSync(this.opts.lockDir, { recursive: true })
@@ -116,7 +124,10 @@ export class FlushScheduler {
       return
     }
     const lockPath = lockPathFor(this.opts.lockDir, cwd)
-    if (!tryAcquireLock(lockPath, this.opts.now?.() ?? Date.now())) return
+    if (!tryAcquireLock(lockPath, this.opts.now?.() ?? Date.now())) {
+      this.opts.onLockSkip?.(sessionID, cwd)
+      return
+    }
     try {
       await this.opts.onFlush(sessionID, cwd, source)
     } finally {

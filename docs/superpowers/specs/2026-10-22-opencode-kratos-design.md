@@ -120,9 +120,17 @@ Notes:
   may receive events for sessions outside its own location, so multiple plugin instances (e.g.
   one per location) could observe the same `session.idle` and race on kratos's shared per-project
   buffer. Every session-end flush is therefore guarded by a per-project lock file
-  (`~/.kratos/projects/<id>/sessions/flush.lock`, created with `O_EXCL`, staleness threshold
-  60 s, removed after the flush). Concurrent flushers: the loser skips silently. This makes the
-  design correct under any instance/delivery topology without needing to pin one down.
+  (created with `O_EXCL`, staleness threshold 10 s — a flush holds the lock for at most ~6 s,
+  so this never steals a live holder's lock but recovers fast from a holder killed by a server
+  shutdown, removed after the flush). Concurrent flushers: the loser skips (logged in debug).
+  This makes the design correct under any instance/delivery topology without needing to pin one
+  down.
+- **Flush survival + capture ordering (empirical findings, v0.1.0):** the server grants only
+  ~1-2 s of shutdown grace after a headless run, so the session-end capture is spawned
+  **detached** (new process group, unref'd) and completes on its own. Because post-tool-use
+  captures are async spawns, a flush firing at execution-completion can race them; the flush
+  therefore awaits the session's in-flight captures (capped at 5 s) before spawning
+  session-end, so kratos summarizes a complete buffer.
 
 ### Kratos invocation
 

@@ -355,7 +355,7 @@ test("setup registers the compaction hook with default options", async () => {
   assert.equal(sessionHooks.get("compaction")?.length, 1)
 })
 
-test("compaction hook fires a session-end capture with a 30s timeout", async () => {
+test("compaction hook fires a detached session-end capture", async () => {
   await withTestStateDir(async () => {
     const fake = fakeKratos()
     __setKratosForTests(fake.client)
@@ -368,7 +368,8 @@ test("compaction hook fires a session-end capture with a 30s timeout", async () 
     assert.equal(fake.captureCalls.length, 1)
     assert.equal(fake.captureCalls[0].event, "session-end")
     assert.deepEqual(fake.captureCalls[0].payload, {})
-    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", timeoutMs: 30000 })
+    // Detached: the capture must survive the server's ~1-2s shutdown grace.
+    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", detached: true, stderrPath: undefined })
   })
 })
 
@@ -403,7 +404,50 @@ test("session.idle events trigger a debounced session-end capture", async () => 
     assert.equal(fake.captureCalls.length, 1)
     assert.equal(fake.captureCalls[0].event, "session-end")
     assert.deepEqual(fake.captureCalls[0].payload, {})
-    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", timeoutMs: 30000 })
+    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", detached: true, stderrPath: undefined })
+  })
+})
+
+test("session-end waits for in-flight post-tool-use captures before summarizing", async () => {
+  await withTestStateDir(async () => {
+    let releaseCapture!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseCapture = resolve
+    })
+    let sessionEnds = 0
+    const fake = fakeKratos({
+      // post-tool-use blocks on the gate — like a real 0.5-2s spawn racing
+      // an execution-completion flush.
+      capture: async (event) => {
+        if (event === "post-tool-use") {
+          await gate
+          return ""
+        }
+        sessionEnds++
+        return ""
+      },
+    })
+    __setKratosForTests(fake.client)
+    const { ctx, toolHooks, pushEvent } = makeCtx({ idleDebounceMinutes: 0 })
+    await pluginDefault.setup(ctx)
+    for (const cb of toolHooks.get("execute.after") ?? []) {
+      await cb({
+        tool: "write",
+        input: { path: "/a.ts", content: "hi" },
+        sessionID: "s1",
+        status: "completed",
+        result: {},
+      })
+    }
+    pushEvent({ type: "session.idle", data: { sessionID: "s1" } })
+    await flush(150)
+    // The flush fired but must be waiting on the gated capture, not
+    // summarizing a buffer that does not hold it yet.
+    assert.equal(sessionEnds, 0)
+    releaseCapture()
+    await flush(150)
+    assert.equal(sessionEnds, 1)
+    assert.equal(fake.captureCalls[fake.captureCalls.length - 1].event, "session-end")
   })
 })
 

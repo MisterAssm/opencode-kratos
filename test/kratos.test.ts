@@ -2,7 +2,8 @@ import { test } from "node:test"
 import assert from "node:assert/strict"
 import path from "node:path"
 import os from "node:os"
-import { createKratos, resolveKratos } from "../src/kratos.ts"
+import { mkdtempSync, rmSync, readFileSync } from "node:fs"
+import { createKratos, resolveKratos, execDetached } from "../src/kratos.ts"
 import type { Runner } from "../src/kratos.ts"
 
 const PREFIX = ["/fake/kratos"]
@@ -98,4 +99,51 @@ test("resolveKratos prefers the launcher when it exists and probes ok", async ()
   assert.equal(calls[0].opts.timeoutMs, 5000)
   await kratos.context({ cwd: "/p" })
   assert.equal(calls[1].command[0], LAUNCHER)
+})
+
+test("capture() with detached spawns fire-and-forget, bypassing the runner", async () => {
+  const { run, calls } = makeRunner({ stdout: "x" })
+  const detached: { command: string[]; opts: Record<string, unknown> }[] = []
+  const kratos = createKratos(PREFIX, run, (command, opts) => {
+    detached.push({ command, opts: { ...opts, cwd: opts.cwd, stderrPath: opts.stderrPath } })
+  })
+  const out = await kratos.capture("session-end", {}, {
+    cwd: "/p",
+    detached: true,
+    timeoutMs: 30_000,
+    stderrPath: "/log/dbg.log",
+  })
+  assert.equal(out, "")
+  assert.equal(calls.length, 0, "the awaitable runner must not be used for detached captures")
+  assert.deepEqual(detached[0].command, ["/fake/kratos", "capture", "--event", "session-end"])
+  assert.equal(detached[0].opts.cwd, "/p")
+  assert.equal(detached[0].opts.stderrPath, "/log/dbg.log")
+  assert.equal(detached[0].opts.timeoutMs, undefined)
+})
+
+test("execDetached runs the command without blocking on its completion", async () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "kratos-detached-"))
+  const marker = path.join(dir, "marker.txt")
+  try {
+    execDetached(["/bin/sh", "-c", `echo done > ${JSON.stringify(marker)}`], { cwd: dir })
+    const deadline = Date.now() + 5000
+    for (;;) {
+      try {
+        assert.equal(readFileSync(marker, "utf-8").trim(), "done")
+        break
+      } catch {
+        if (Date.now() > deadline) assert.fail("detached child never wrote the marker")
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test("execDetached never throws, not even for a nonexistent binary", async () => {
+  execDetached(["/definitely/not/a/binary", "--flag"], { cwd: os.tmpdir() })
+  // The spawn error fires asynchronously; a missing error handler would crash
+  // the process. Give it a tick to prove the handler swallows it.
+  await new Promise((r) => setTimeout(r, 100))
 })

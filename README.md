@@ -86,14 +86,20 @@ That's it — all features are on by default.
   `kratos capture --event post-tool-use`, fire-and-forget so the agent loop
   never waits. Failed tool calls are skipped.
 - **Session summaries** — instead of hooking a "stop" moment that OpenCode does
-  not have, the plugin subscribes to `session.idle` events and arms a
-  per-session debounce (default 15 min). Each new idle event re-arms the timer,
-  so the summary is written when the session has truly gone quiet, regardless of
-  event cadence. Context compaction and plugin shutdown flush immediately.
-  Flushes are serialized per project through a lock file
+  not have, the plugin subscribes to `session.idle` and execution-completion
+  events (`session.execution.succeeded/failed/interrupted`, which headless
+  `opencode run` sessions emit) and arms a per-session debounce (default
+  15 min). Each new trigger re-arms the timer, so the summary is written when
+  the session has truly gone quiet, regardless of event cadence. Context
+  compaction and plugin shutdown flush immediately. Before summarizing, a
+  flush waits (up to 5 s) for the session's still-in-flight tool captures so
+  kratos sees a complete event buffer. The session-end capture itself runs in
+  a detached child process: the OpenCode server only grants ~1-2 s of
+  shutdown grace, which an awaited capture would not survive. Flushes are
+  serialized per project through a lock file
   (`~/.kratos/opencode-kratos/locks/`), so several OpenCode instances open on
-  the same project never double-summarize; a lock older than 60 s is considered
-  abandoned and taken over.
+  the same project never double-summarize; a lock older than 10 s is considered
+  abandoned (a flush holds it for at most ~6 s) and taken over.
 
 Every hook is wrapped in a never-throw guard: if kratos is missing, slow, or
 broken, sessions proceed normally — you just lose memory features until it
