@@ -10,7 +10,7 @@ Persistent project memory for [OpenCode](https://opencode.ai), powered by [krato
 | `session.hook("prompt")` — prompt admission | Append recall block to prompt text | `kratos capture --event user-prompt` stdin `{prompt}`, stdout appended |
 | `ctx.tool.hook("execute.after")` — completed tool calls | Buffer edit/command events | `kratos capture --event post-tool-use` stdin translated payload |
 | `session.hook("compaction")` — before context compaction | Flush session buffer | `kratos capture --event session-end` |
-| `session.idle` event (debounced, default 15 min) | Flush session buffer | `kratos capture --event session-end` |
+| `session.idle` (interactive) or `session.execution.*` completion (headless runs), debounced 15 min | Flush session buffer | `kratos capture --event session-end` |
 | Plugin cleanup (server shutdown) | Best-effort flush | `kratos capture --event session-end` |
 
 Tool events are translated to the tool names kratos understands:
