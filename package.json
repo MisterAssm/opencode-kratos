@@ -8,7 +8,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "test": "node --test test/",
+    "test": "node --test",
     "typecheck": "tsc --noEmit"
   },
   "engines": {
