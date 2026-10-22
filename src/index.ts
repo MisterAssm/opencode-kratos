@@ -2,6 +2,7 @@ import { Plugin } from "@opencode/plugin"
 import { resolveOptions } from "./config.ts"
 import { resolveKratos } from "./kratos.ts"
 import type { Kratos } from "./kratos.ts"
+import { translateToolEvent } from "./translate.ts"
 
 const CONTEXT_CACHE_MAX = 100
 
@@ -108,6 +109,28 @@ export default Plugin.define({
         ),
       )
       log("prompt recall hook registered")
+    }
+
+    // --- Tool-event capture (Claude Code PostToolUse equivalent) ---
+    // Fire-and-forget: never block the agent loop on buffering. Failed tool
+    // calls are skipped; kratos buffers completed ones for the session summary.
+    if (opts.capture) {
+      registrations.push(
+        await ctx.tool.hook("execute.after", (event) => {
+          if (event.status !== "completed") return
+          void wrap(async () => {
+            const kratos = await kratosPromise
+            if (!kratos) return
+            const cwd = await sessionCwd(ctx.session.get, event.sessionID)
+            if (!cwd) return
+            const payload = translateToolEvent(event.tool, event.input)
+            kratos
+              .capture("post-tool-use", payload, { cwd, timeoutMs: 5000 })
+              .catch((err) => log(`capture failed: ${err instanceof Error ? err.message : String(err)}`))
+          })
+        }),
+      )
+      log("tool capture hook registered")
     }
 
     return async () => {

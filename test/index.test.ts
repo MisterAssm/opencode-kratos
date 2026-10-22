@@ -7,6 +7,7 @@ type HookCb = (event: any) => Promise<void> | void
 
 function makeCtx(options: Record<string, unknown> = {}) {
   const sessionHooks = new Map<string, HookCb[]>()
+  const toolHooks = new Map<string, HookCb[]>()
   const ctx = {
     options,
     location: { directory: "/proj" },
@@ -19,7 +20,14 @@ function makeCtx(options: Record<string, unknown> = {}) {
       },
       get: async (_input: { sessionID: string }) => ({ location: { directory: "/proj" } }),
     },
-    tool: { hook: async () => ({ dispose: async () => {} }) },
+    tool: {
+      hook: async (name: string, cb: HookCb) => {
+        const list = toolHooks.get(name) ?? []
+        list.push(cb)
+        toolHooks.set(name, list)
+        return { dispose: async () => {} }
+      },
+    },
     command: { transform: async () => ({ dispose: async () => {} }) },
     event: {
       subscribe: async function* () {
@@ -27,7 +35,7 @@ function makeCtx(options: Record<string, unknown> = {}) {
       },
     },
   }
-  return { ctx: ctx as any, sessionHooks }
+  return { ctx: ctx as any, sessionHooks, toolHooks }
 }
 
 function fakeKratos(behavior?: {
@@ -214,4 +222,78 @@ test("session.get throwing leaves the prompt text unchanged without throwing", a
   await pluginDefault.setup(ctx)
   const event = await firePrompt(sessionHooks, "s1", "how does auth work?")
   assert.equal(event.prompt.text, "how does auth work?")
+})
+
+const flush = () => new Promise((resolve) => setTimeout(resolve, 10))
+
+test("setup registers the tool execute.after hook with default options", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, toolHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  assert.equal(toolHooks.get("execute.after")?.length, 1)
+})
+
+test("completed write events are translated and captured", async () => {
+  const fake = fakeKratos()
+  __setKratosForTests(fake.client)
+  const { ctx, toolHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  for (const cb of toolHooks.get("execute.after") ?? []) {
+    await cb({
+      tool: "write",
+      input: { path: "/a.ts", content: "hi" },
+      sessionID: "s1",
+      status: "completed",
+      result: {},
+    })
+  }
+  await flush()
+  assert.equal(fake.captureCalls.length, 1)
+  assert.deepEqual(fake.captureCalls[0].event, "post-tool-use")
+  assert.deepEqual(fake.captureCalls[0].payload, {
+    tool_name: "Write",
+    tool_input: { file_path: "/a.ts" },
+  })
+  assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", timeoutMs: 5000 })
+})
+
+test("failed tool events are not captured", async () => {
+  const fake = fakeKratos()
+  __setKratosForTests(fake.client)
+  const { ctx, toolHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  for (const cb of toolHooks.get("execute.after") ?? []) {
+    await cb({
+      tool: "write",
+      input: { path: "/a.ts" },
+      sessionID: "s1",
+      status: "error",
+      error: { message: "nope" },
+    })
+  }
+  await flush()
+  assert.equal(fake.captureCalls.length, 0)
+})
+
+test("capture rejection during tool events does not throw", async () => {
+  __setKratosForTests(fakeKratos({ capture: async () => Promise.reject(new Error("boom")) }).client)
+  const { ctx, toolHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  for (const cb of toolHooks.get("execute.after") ?? []) {
+    await cb({
+      tool: "shell",
+      input: { command: "ls" },
+      sessionID: "s1",
+      status: "completed",
+      result: {},
+    })
+  }
+  await flush()
+})
+
+test("capture: false disables the tool hook registration", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, toolHooks } = makeCtx({ capture: false })
+  await pluginDefault.setup(ctx)
+  assert.equal(toolHooks.get("execute.after"), undefined)
 })
