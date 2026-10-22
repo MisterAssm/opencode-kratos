@@ -117,6 +117,7 @@ export default Plugin.define({
             const recall = await kratos.capture("user-prompt", { prompt: text }, { cwd })
             if (recall.length > 0) {
               event.prompt.text = `${text}\n\n<kratos-recall>\n${recall}\n</kratos-recall>`
+              log(`recall injected into prompt for ${event.sessionID}`)
             }
           }),
         ),
