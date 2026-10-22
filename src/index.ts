@@ -166,6 +166,7 @@ export default Plugin.define({
           const kratos = await kratosPromise
           if (!kratos) return
           await kratos.capture("session-end", {}, { cwd, timeoutMs: 30_000 })
+          log(`session-end capture completed for ${sessionID}`) // TEMP PROBE — remove
         },
       })
 
@@ -222,6 +223,8 @@ export default Plugin.define({
     )
 
     return async () => {
+      await new Promise((r) => setTimeout(r, 3000)) // TEMP PROBE — does the server await cleanups?
+      log("cleanup still alive after 3s") // TEMP PROBE — remove
       await cleanupSummary?.()
       for (const registration of registrations) {
         await registration.dispose()
