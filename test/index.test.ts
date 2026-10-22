@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import path from "node:path"
-import pluginDefault, { __setKratosForTests, __setLockDirForTests, sessionCwd, wrap } from "../src/index.ts"
+import pluginDefault, { __setKratosForTests, __setStateDirForTests, sessionCwd, wrap } from "../src/index.ts"
 import { memoryCommandPrompt } from "../src/command.ts"
 import type { Kratos } from "../src/kratos.ts"
 
@@ -338,13 +338,13 @@ function compactionEvent(sessionID: string) {
   }
 }
 
-/** Runs fn with a private flush-lock dir so tests never touch ~/.kratos. */
-function withTestLockDir(fn: () => Promise<void>): Promise<void> {
-  const lockDir = mkdtempSync(path.join(tmpdir(), "kratos-locktest-"))
-  __setLockDirForTests(lockDir)
+/** Runs fn with a private plugin state dir so tests never touch ~/.kratos. */
+function withTestStateDir(fn: () => Promise<void>): Promise<void> {
+  const stateDir = mkdtempSync(path.join(tmpdir(), "kratos-locktest-"))
+  __setStateDirForTests(stateDir)
   return fn().finally(() => {
-    __setLockDirForTests(null)
-    rmSync(lockDir, { recursive: true, force: true })
+    __setStateDirForTests(null)
+    rmSync(stateDir, { recursive: true, force: true })
   })
 }
 
@@ -356,7 +356,7 @@ test("setup registers the compaction hook with default options", async () => {
 })
 
 test("compaction hook fires a session-end capture with a 30s timeout", async () => {
-  await withTestLockDir(async () => {
+  await withTestStateDir(async () => {
     const fake = fakeKratos()
     __setKratosForTests(fake.client)
     const { ctx, sessionHooks } = makeCtx()
@@ -373,7 +373,7 @@ test("compaction hook fires a session-end capture with a 30s timeout", async () 
 })
 
 test("compaction flush is fire-and-forget: the hook returns before capture completes", async () => {
-  await withTestLockDir(async () => {
+  await withTestStateDir(async () => {
     let releaseCapture!: () => void
     const gate = new Promise<void>((resolve) => {
       releaseCapture = resolve
@@ -393,7 +393,7 @@ test("compaction flush is fire-and-forget: the hook returns before capture compl
 })
 
 test("session.idle events trigger a debounced session-end capture", async () => {
-  await withTestLockDir(async () => {
+  await withTestStateDir(async () => {
     const fake = fakeKratos()
     __setKratosForTests(fake.client)
     const { ctx, pushEvent } = makeCtx({ idleDebounceMinutes: 0 })
@@ -419,7 +419,7 @@ test("summary: false disables the compaction hook and idle handling", async () =
 })
 
 test("cleanup flushes armed sessions instead of dropping them", async () => {
-  await withTestLockDir(async () => {
+  await withTestStateDir(async () => {
     const fake = fakeKratos()
     __setKratosForTests(fake.client)
     // Large debounce keeps the session armed (timer never fires on its own):

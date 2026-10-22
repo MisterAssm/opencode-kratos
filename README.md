@@ -69,7 +69,7 @@ That's it — all features are on by default.
 | `summary` | `true` | Write session summaries (the session-end flushes). |
 | `idleDebounceMinutes` | `15` | How long a session must stay idle before its summary is flushed. `0` flushes on the next tick after each idle event. |
 | `contextBudget` | *(unset)* | Token budget passed to `kratos context --budget N` to cap the memory block size. |
-| `debug` | `false` | Log every plugin decision to the OpenCode server log under a `[kratos]` prefix. |
+| `debug` | `false` | Write every plugin decision to `~/.kratos/opencode-kratos/debug.log` under a `[kratos]` prefix. |
 
 ## How it works
 
@@ -108,8 +108,9 @@ comes back.
   (default 15 min); it also fires on compaction and shutdown. Lower
   `idleDebounceMinutes` if you iterate quickly.
 - **General diagnosis** — set `"debug": true` in the plugin options and read
-  the OpenCode server log at `~/.local/share/opencode/log/opencode.log`;
-  every plugin decision is prefixed with `[kratos]`.
+  `~/.kratos/opencode-kratos/debug.log`; every plugin decision is prefixed
+  with `[kratos]`. (OpenCode v2 swallows plugin console output, so the plugin
+  writes its own debug file.)
 
 ## Known limitations
 

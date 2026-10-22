@@ -21,6 +21,7 @@ const KEEP = process.env.KEEP === "1"
 const OPENCODE_LOG = path.join(homedir(), ".local", "share", "opencode", "log", "opencode.log")
 const PLUGIN_SPEC = "git+https://github.com/MisterAssm/opencode-kratos.git#feat/plugin"
 const PLUGIN_CACHE_GLOB = path.join(homedir(), ".cache", "opencode", "npm", "git-opencode-kratos-*")
+const PLUGIN_DEBUG_LOG = path.join(homedir(), ".kratos", "opencode-kratos", "debug.log")
 
 const CANARY = "E2E canary: the deploy checklist requires SSH key rotation every 90 days"
 
@@ -59,6 +60,15 @@ function logTailSince(size) {
   }
 }
 
+/** Reads the plugin's debug log ("" when absent — e.g. debug: false). */
+function readDebugLog() {
+  try {
+    return readFileSync(PLUGIN_DEBUG_LOG, "utf-8")
+  } catch {
+    return ""
+  }
+}
+
 console.log("[e2e] opencode-kratos end-to-end verification")
 
 // --- 1. Throwaway git project -------------------------------------------------
@@ -83,6 +93,7 @@ if (localHead !== pushedHead) {
   process.exit(1)
 }
 run("rm", ["-rf", PLUGIN_CACHE_GLOB], { capture: true })
+run("rm", ["-f", PLUGIN_DEBUG_LOG], { capture: true })
 
 writeFileSync(
   path.join(projectDir, "opencode.json"),
@@ -134,14 +145,19 @@ console.log(
     .join("\n"),
 )
 
-if (recallOut.includes("[kratos]") || recallLog.includes("[kratos]")) {
-  ok("plugin logged [kratos] lines")
+// The plugin's own debug file is the primary evidence surface: it proves the
+// plugin's setup ran AND that options arrived (debug: true is an option).
+const recallDebugLog = readDebugLog()
+if (recallDebugLog.includes("[kratos]")) {
+  ok(`plugin debug log written (${recallDebugLog.split("\n").filter((l) => l.length > 0).length} lines — options delivered)`)
 } else {
-  bad("no [kratos] log lines found in run output or opencode.log")
+  bad("no [kratos] lines in ~/.kratos/opencode-kratos/debug.log — plugin setup may not have run or options were not delivered")
 }
 
 const recallInjected =
-  recallOut.includes("[kratos] recall injected") || recallLog.includes("[kratos] recall injected")
+  recallDebugLog.includes("recall injected") ||
+  recallOut.includes("[kratos] recall injected") ||
+  recallLog.includes("[kratos] recall injected")
 const canaryInAnswer = recallRun.stdout.includes("90 days")
 const canaryInPrompt = recallOut.includes("kratos-recall") || recallLog.includes("kratos-recall")
 if (recallInjected || canaryInAnswer || canaryInPrompt) {
@@ -156,6 +172,8 @@ if (recallInjected || canaryInAnswer || canaryInPrompt) {
   )
 } else {
   bad("no evidence of recall — expected '[kratos] recall injected', '90 days' in the answer, or a kratos-recall block")
+  console.error("    --- plugin debug log ---")
+  console.error(recallDebugLog.split("\n").map((l) => `    ${l}`).join("\n"))
   console.error("    --- run output tail ---")
   console.error(recallOut.split("\n").slice(-25).map((l) => `    ${l}`).join("\n"))
   console.error("    --- opencode.log tail (this run) ---")
@@ -178,7 +196,9 @@ const captureOut = `${captureRun.stdout}\n${captureRun.stderr}`
 const captureLog = logTailSince(logSizeBeforeCapture)
 
 // Which flush source fired? (idle / cleanup / compaction)
+const captureDebugLog = readDebugLog()
 const flushSources = [
+  ...captureDebugLog.matchAll(/session summary flush \((\w+)\)/g),
   ...captureLog.matchAll(/session summary flush \((\w+)\)/g),
   ...captureOut.matchAll(/session summary flush \((\w+)\)/g),
 ].map((m) => m[1])
@@ -215,6 +235,8 @@ if (summaryMemory) {
   ok(`memory ${summaryMemory.id} (tags: ${summaryMemory.tags?.join(", ")}) mentions hello.txt`)
 } else {
   bad("no session-summary/auto-capture memory mentioning hello.txt in kratos recent")
+  console.error("    --- plugin debug log ---")
+  console.error(captureDebugLog.split("\n").map((l) => `    ${l}`).join("\n"))
   console.error("    --- kratos recent --json (last attempt, head) ---")
   console.error(recentRaw.split("\n").slice(0, 40).map((l) => `    ${l}`).join("\n"))
   console.error("    --- run output tail ---")

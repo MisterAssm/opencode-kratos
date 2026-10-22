@@ -7,6 +7,7 @@ import type { Kratos } from "./kratos.ts"
 import { translateToolEvent } from "./translate.ts"
 import { FlushScheduler } from "./summary.ts"
 import { memoryCommandPrompt } from "./command.ts"
+import { createDebugLogger } from "./log.ts"
 
 const CONTEXT_CACHE_MAX = 100
 
@@ -18,13 +19,14 @@ export function __setKratosForTests(client: Kratos | null): void {
   kratosOverride = client
 }
 
-/** Test-only seam: overrides the flush-lock directory so unit tests never
- * touch ~/.kratos (a crashed test run would otherwise leave a stale lock that
- * silences flushes for 60s). Undefined means "production mode". */
-let lockDirOverride: string | undefined = undefined
+/** Test-only seam: overrides the plugin's state directory (~/.kratos/opencode-kratos
+ * — flush locks and debug log) so unit tests never touch ~/.kratos (a crashed
+ * test run would otherwise leave a stale lock that silences flushes for 60s).
+ * Undefined means "production mode". */
+let stateDirOverride: string | undefined = undefined
 
-export function __setLockDirForTests(dir: string | null): void {
-  lockDirOverride = dir ?? undefined
+export function __setStateDirForTests(dir: string | null): void {
+  stateDirOverride = dir ?? undefined
 }
 
 /** Resolves a session's project directory, or undefined when the session
@@ -58,7 +60,10 @@ export default Plugin.define({
   id: "kratos",
   async setup(ctx) {
     const opts = resolveOptions(ctx.options)
-    const log = opts.debug ? (msg: string) => console.log(`[kratos] ${msg}`) : () => {}
+    // OpenCode v2 swallows plugin console.log output, so debug lines go to a
+    // file under the plugin state dir instead.
+    const stateDir = stateDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos")
+    const log = createDebugLogger(opts.debug, stateDir)
 
     // Resolve kratos in the background: server startup must not block on the
     // probe (npx can take up to 60s on a cold cache). Hook handlers await
@@ -155,7 +160,7 @@ export default Plugin.define({
     if (opts.summary) {
       const scheduler = new FlushScheduler({
         debounceMs: opts.idleDebounceMinutes * 60_000,
-        lockDir: lockDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos", "locks"),
+        lockDir: stateDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos", "locks"),
         onFlush: async (sessionID, cwd, source) => {
           log(`session summary flush (${source}) for ${sessionID}`)
           const kratos = await kratosPromise
