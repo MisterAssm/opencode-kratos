@@ -4,9 +4,7 @@
   "description": "Persistent kratos-memory integration for OpenCode — context injection, per-prompt recall, auto-capture, session summaries",
   "type": "module",
   "license": "MIT",
-  "exports": {
-    ".": "./src/index.ts"
-  },
+  "main": ".opencode/plugins/kratos.js",
   "scripts": {
     "test": "node --test",
     "typecheck": "tsc --noEmit",
@@ -16,7 +14,8 @@
     "node": ">=22.18.0"
   },
   "files": [
-    "src"
+    "src",
+    ".opencode"
   ],
   "keywords": [
     "opencode",
