@@ -144,3 +144,5 @@ MIT
 Memory backend: [kratos-memory](https://github.com/ceorkm/kratos-cli) by
 [ceorkm](https://github.com/ceorkm). This plugin is an independent OpenCode
 integration and is not affiliated with that project.
+
+Source and issues: [MisterAssm/opencode-kratos](https://github.com/MisterAssm/opencode-kratos).
