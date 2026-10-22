@@ -96,12 +96,16 @@ export default Plugin.define({
             const kratos = await kratosPromise
             if (!kratos) return
             const sessionID = event.sessionID
-            let block = contextCache.get(sessionID)
+            let block: string | null | undefined = contextCache.get(sessionID)
             if (block === undefined) {
               const cwd = await sessionCwd(ctx.session.get, sessionID)
               if (!cwd) return
               block = await kratos.context({ cwd, budget: opts.contextBudget })
-              if (block.length > 0) {
+              if (block !== null) {
+                // Cache every success — including an empty one: a
+                // memory-less project must not re-run `kratos context` on
+                // every model call. Failures (null) stay uncached so a
+                // transient timeout is retried on the next call.
                 if (contextCache.size >= CONTEXT_CACHE_MAX) {
                   const oldest = contextCache.keys().next().value
                   if (oldest !== undefined) contextCache.delete(oldest)
@@ -109,7 +113,7 @@ export default Plugin.define({
                 contextCache.set(sessionID, block)
               }
             }
-            if (block !== undefined && block.length > 0) {
+            if (block) {
               event.system.push({ type: "text", text: `<kratos-context>\n${block}\n</kratos-context>` })
             }
           }),
@@ -232,11 +236,15 @@ export default Plugin.define({
           name: "memory",
           description: "Review kratos project memory (status + recent)",
           execute: async ({ sessionID, prompt, delivery }) => {
-            await ctx.session.prompt({
-              sessionID,
-              ...prompt,
-              text: memoryCommandPrompt(),
-              delivery,
+            // Never-throw: a plugin failure must not break the session the
+            // user invoked the command from.
+            await wrap(async () => {
+              await ctx.session.prompt({
+                sessionID,
+                ...prompt,
+                text: memoryCommandPrompt(),
+                delivery,
+              })
             })
           },
         })

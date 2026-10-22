@@ -67,7 +67,7 @@ function makeCtx(options: Record<string, unknown> = {}) {
 }
 
 function fakeKratos(behavior?: {
-  context?: (args: unknown) => Promise<string>
+  context?: (args: unknown) => Promise<string | null>
   capture?: (event: string, payload: unknown, args: unknown) => Promise<string>
 }) {
   const contextCalls: unknown[] = []
@@ -132,6 +132,31 @@ test("context is fetched once per session and again for a new session", async ()
   assert.equal(fake.contextCalls.length, 1)
   await fireContext(sessionHooks, "s2")
   assert.equal(fake.contextCalls.length, 2)
+})
+
+test("empty context output is cached: later model calls do not re-query kratos", async () => {
+  const fake = fakeKratos({ context: async () => "" })
+  __setKratosForTests(fake.client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  await fireContext(sessionHooks, "s1")
+  await fireContext(sessionHooks, "s1")
+  await fireContext(sessionHooks, "s1")
+  assert.equal(fake.contextCalls.length, 1)
+})
+
+test("a failed context fetch (null) is retried on the next model call", async () => {
+  // null = execution failure (timeout / non-zero exit). Unlike an empty
+  // success it must NOT be cached: a transient failure deserves a retry,
+  // while never poisoning the session (nothing is pushed either way).
+  const fake = fakeKratos({ context: async () => null })
+  __setKratosForTests(fake.client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  const event = await fireContext(sessionHooks, "s1")
+  await fireContext(sessionHooks, "s1")
+  assert.equal(fake.contextCalls.length, 2)
+  assert.equal(event.system.length, 0)
 })
 
 test("empty context output pushes nothing", async () => {
@@ -510,6 +535,21 @@ test("/memory execute prompts the session with the memory command text", async (
     sessionID: "s1",
     text: memoryCommandPrompt(),
     files: [],
+    delivery: "steer",
+  })
+})
+
+test("/memory execute never throws when the prompt call fails", async () => {
+  __setKratosForTests(null)
+  const { ctx, commands } = makeCtx()
+  ctx.session.prompt = async () => {
+    throw new Error("boom")
+  }
+  await pluginDefault.setup(ctx)
+  // Must resolve (not reject): a plugin failure must never break a session.
+  await commands[0].execute({
+    sessionID: "s1",
+    prompt: { text: "/memory", files: [] },
     delivery: "steer",
   })
 })

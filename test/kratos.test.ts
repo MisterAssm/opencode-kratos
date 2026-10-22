@@ -3,7 +3,7 @@ import assert from "node:assert/strict"
 import path from "node:path"
 import os from "node:os"
 import { mkdtempSync, rmSync, readFileSync } from "node:fs"
-import { createKratos, resolveKratos, execDetached } from "../src/kratos.ts"
+import { createKratos, resolveKratos, execDetached, execCommand } from "../src/kratos.ts"
 import type { Runner } from "../src/kratos.ts"
 
 const PREFIX = ["/fake/kratos"]
@@ -48,17 +48,17 @@ test("capture() pipes the JSON payload on stdin with default timeout", async () 
   assert.equal(calls[0].opts.cwd, "/p")
 })
 
-test("context() and capture() resolve empty string when the runner fails", async () => {
+test("context() resolves null and capture() resolves empty string when the runner fails", async () => {
   const { run } = makeRunner("fail")
   const kratos = createKratos(PREFIX, run)
-  assert.equal(await kratos.context({ cwd: "/p" }), "")
+  assert.equal(await kratos.context({ cwd: "/p" }), null)
   assert.equal(await kratos.capture("session-end", {}, { cwd: "/p" }), "")
 })
 
-test("a non-zero exit code also resolves empty string", async () => {
+test("a non-zero exit code also resolves null for context", async () => {
   const { run } = makeRunner({ stdout: "partial output", code: 1 })
   const kratos = createKratos(PREFIX, run)
-  assert.equal(await kratos.context({ cwd: "/p" }), "")
+  assert.equal(await kratos.context({ cwd: "/p" }), null)
 })
 
 test("resolveKratos uses the binary override and probes it with --help", async () => {
@@ -146,4 +146,52 @@ test("execDetached never throws, not even for a nonexistent binary", async () =>
   // The spawn error fires asynchronously; a missing error handler would crash
   // the process. Give it a tick to prove the handler swallows it.
   await new Promise((r) => setTimeout(r, 100))
+})
+
+// --- Real-process battery for execCommand ---
+// Every test above injects a fake Runner; these exercise the real spawner —
+// the code that runs inside the OpenCode server process, where an unhandled
+// stream error crashes the whole server (plugins load in-process).
+
+test("execCommand resolves real stdout and exit code", async () => {
+  const outcome = await execCommand(["/usr/bin/printf", "hello"], { cwd: os.tmpdir() })
+  assert.equal(outcome.code, 0)
+  assert.equal(outcome.stdout, "hello")
+})
+
+test("execCommand delivers stdin to the child end-to-end", async () => {
+  const outcome = await execCommand(["/usr/bin/wc", "-c"], { cwd: os.tmpdir(), stdin: "hello world" })
+  assert.equal(outcome.code, 0)
+  assert.equal(outcome.stdout.trim(), "11")
+})
+
+test("execCommand survives a child that exits before reading a large stdin (EPIPE)", async () => {
+  // /usr/bin/true exits immediately without reading stdin. A payload larger
+  // than the pipe buffer (~64KB) cannot be fully written, so once the child
+  // dies the pending flushes hit EPIPE on child.stdin. Without an error
+  // listener on that stream the 'error' event is unhandled and crashes the
+  // process — exactly the server-crash failure mode plugins must never hit.
+  const outcome = await execCommand(["/usr/bin/true"], {
+    cwd: os.tmpdir(),
+    stdin: "x".repeat(256 * 1024),
+  })
+  assert.equal(outcome.code, 0)
+})
+
+test("execCommand rejects on timeout without crashing on the killed child's stdin (EPIPE)", async () => {
+  await assert.rejects(
+    execCommand(["/bin/sleep", "10"], {
+      cwd: os.tmpdir(),
+      timeoutMs: 250,
+      stdin: "x".repeat(256 * 1024),
+    }),
+    /timeout after 250ms/,
+  )
+})
+
+test("execCommand rejects for a nonexistent binary, even with stdin", async () => {
+  await assert.rejects(
+    execCommand(["/definitely/not/a/binary", "--flag"], { cwd: os.tmpdir(), stdin: "x" }),
+    /ENOENT/,
+  )
 })

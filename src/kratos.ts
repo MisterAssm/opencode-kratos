@@ -42,7 +42,8 @@ export interface CaptureArgs {
 }
 
 export interface Kratos {
-  context(args: { cwd: string; budget?: number; timeoutMs?: number }): Promise<string>
+  /** Trimmed stdout, or null when execution failed (the caller can retry). */
+  context(args: { cwd: string; budget?: number; timeoutMs?: number }): Promise<string | null>
   capture(event: CaptureEvent, payload: unknown, args: CaptureArgs): Promise<string>
 }
 
@@ -60,6 +61,13 @@ export function execCommand(command: string[], opts: ExecOptions): Promise<ExecO
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
     })
+    // If the child exits (or is killed) before consuming a large stdin
+    // payload, pending writes fail with EPIPE on this stream. An unhandled
+    // 'error' event would crash the process — and plugins run in-process
+    // inside the OpenCode server. The command's outcome is governed by
+    // 'close'/'error' on the child itself; a failed stdin delivery only
+    // means the child never got the payload, so the error is swallowed.
+    child.stdin.on("error", () => {})
     const timeoutMs = opts.timeoutMs ?? EXEC_DEFAULT_TIMEOUT_MS
     let stdout = ""
     let settled = false
@@ -120,42 +128,47 @@ export function execDetached(command: string[], opts: DetachedSpawnOptions): voi
   }
 }
 
-/** Builds a Kratos client over an injectable runner. `context`/`capture`
- * return trimmed stdout, or "" on any failure — they never throw. Detached
- * captures bypass the runner entirely and resolve "" immediately. */
+/** Builds a Kratos client over an injectable runner. `context` returns
+ * trimmed stdout, or null on execution failure (spawn error, timeout,
+ * non-zero exit) so callers can distinguish a failed fetch from an empty
+ * project memory. `capture` returns "" on any failure — captures are
+ * fire-and-forget, there is nothing to retry. Detached captures bypass the
+ * runner entirely and resolve "" immediately. Neither ever throws. */
 export function createKratos(prefix: string[], run: Runner, spawnDetached: DetachedSpawner = execDetached): Kratos {
-  async function runOrEmpty(command: string[], opts: ExecOptions): Promise<string> {
+  async function runOrNull(command: string[], opts: ExecOptions): Promise<ExecOutcome | null> {
     try {
-      const outcome = await run(command, opts)
-      if (outcome.code !== 0) return ""
-      return outcome.stdout.trim()
+      return await run(command, opts)
     } catch {
-      return ""
+      return null
     }
   }
 
   return {
-    context(args) {
+    async context(args) {
       const command = [...prefix, "context"]
       if (args.budget !== undefined) command.push("--budget", String(args.budget))
-      return runOrEmpty(command, {
+      const outcome = await runOrNull(command, {
         cwd: args.cwd,
         timeoutMs: args.timeoutMs ?? CONTEXT_TIMEOUT_MS,
       })
+      if (outcome === null || outcome.code !== 0) return null
+      return outcome.stdout.trim()
     },
-    capture(event, payload, args) {
+    async capture(event, payload, args) {
       if (args.detached) {
         spawnDetached([...prefix, "capture", "--event", event], {
           cwd: args.cwd,
           stderrPath: args.stderrPath,
         })
-        return Promise.resolve("")
+        return ""
       }
-      return runOrEmpty([...prefix, "capture", "--event", event], {
+      const outcome = await runOrNull([...prefix, "capture", "--event", event], {
         cwd: args.cwd,
         timeoutMs: args.timeoutMs ?? CAPTURE_TIMEOUT_MS,
         stdin: JSON.stringify(payload),
       })
+      if (outcome === null || outcome.code !== 0) return ""
+      return outcome.stdout.trim()
     },
   }
 }
