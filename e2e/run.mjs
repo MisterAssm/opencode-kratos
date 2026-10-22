@@ -19,7 +19,7 @@ import path from "node:path"
 const REPO_ROOT = path.resolve(import.meta.dirname, "..")
 const KEEP = process.env.KEEP === "1"
 const OPENCODE_LOG = path.join(homedir(), ".local", "share", "opencode", "log", "opencode.log")
-const PLUGIN_SPEC = "git+https://github.com/MisterAssm/opencode-kratos.git#feat/plugin"
+const PLUGIN_SPEC = "git+https://github.com/MisterAssm/opencode-kratos.git#main"
 const PLUGIN_DEBUG_LOG = path.join(homedir(), ".kratos", "opencode-kratos", "debug.log")
 
 const CANARY = "E2E canary: the deploy checklist requires SSH key rotation every 90 days"
@@ -133,15 +133,15 @@ if (gitInit.status !== 0) {
 }
 
 // --- 2. Plugin config ----------------------------------------------------------
-// The plugin is loaded via the git spec of this repository's feat/plugin
+// The plugin is loaded via the git spec of this repository's main
 // branch: opencode v2.1.2 only loads package-spec plugin entries (see ledger
 // ruling for Task 10). The spec therefore tests exactly the code that is
 // PUSHED — the pre-flight check below fails fast when local HEAD is not
 // pushed, and the plugin cache is cleared so the runs install fresh code.
 const localHead = run("git", ["rev-parse", "HEAD"], { cwd: REPO_ROOT, capture: true }).stdout.trim()
-const pushedHead = run("git", ["rev-parse", "origin/feat/plugin"], { cwd: REPO_ROOT, capture: true }).stdout.trim()
+const pushedHead = run("git", ["rev-parse", "origin/main"], { cwd: REPO_ROOT, capture: true }).stdout.trim()
 if (localHead !== pushedHead) {
-  console.error(`[e2e] FAIL: local HEAD ${localHead.slice(0, 8)} is not pushed (origin/feat/plugin = ${pushedHead.slice(0, 8)}). Run: git push origin feat/plugin`)
+  console.error(`[e2e] FAIL: local HEAD ${localHead.slice(0, 8)} is not pushed (origin/main = ${pushedHead.slice(0, 8)}). Run: git push origin main`)
   process.exit(1)
 }
 // Clear the plugin's installed-package cache so the runs install the pushed
