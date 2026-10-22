@@ -1,6 +1,9 @@
 import { test } from "node:test"
 import assert from "node:assert/strict"
-import pluginDefault, { __setKratosForTests, sessionCwd, wrap } from "../src/index.ts"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import path from "node:path"
+import pluginDefault, { __setKratosForTests, __setLockDirForTests, sessionCwd, wrap } from "../src/index.ts"
 import type { Kratos } from "../src/kratos.ts"
 
 type HookCb = (event: any) => Promise<void> | void
@@ -8,6 +11,20 @@ type HookCb = (event: any) => Promise<void> | void
 function makeCtx(options: Record<string, unknown> = {}) {
   const sessionHooks = new Map<string, HookCb[]>()
   const toolHooks = new Map<string, HookCb[]>()
+  const eventQueue: any[] = []
+  let wake: (() => void) | null = null
+  const pushEvent = (event: any) => {
+    eventQueue.push(event)
+    wake?.()
+  }
+  const eventStream = async function* (): AsyncGenerator<any> {
+    while (true) {
+      while (eventQueue.length > 0) yield eventQueue.shift()!
+      await new Promise<void>((resolve) => {
+        wake = resolve
+      })
+    }
+  }
   const ctx = {
     options,
     location: { directory: "/proj" },
@@ -29,13 +46,9 @@ function makeCtx(options: Record<string, unknown> = {}) {
       },
     },
     command: { transform: async () => ({ dispose: async () => {} }) },
-    event: {
-      subscribe: async function* () {
-        // yields nothing by default
-      },
-    },
+    event: { subscribe: (_opts?: unknown) => eventStream() },
   }
-  return { ctx: ctx as any, sessionHooks, toolHooks }
+  return { ctx: ctx as any, sessionHooks, toolHooks, pushEvent }
 }
 
 function fakeKratos(behavior?: {
@@ -224,7 +237,7 @@ test("session.get throwing leaves the prompt text unchanged without throwing", a
   assert.equal(event.prompt.text, "how does auth work?")
 })
 
-const flush = () => new Promise((resolve) => setTimeout(resolve, 10))
+const flush = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms))
 
 test("setup registers the tool execute.after hook with default options", async () => {
   __setKratosForTests(fakeKratos().client)
@@ -296,4 +309,113 @@ test("capture: false disables the tool hook registration", async () => {
   const { ctx, toolHooks } = makeCtx({ capture: false })
   await pluginDefault.setup(ctx)
   assert.equal(toolHooks.get("execute.after"), undefined)
+})
+
+function compactionEvent(sessionID: string) {
+  return {
+    sessionID,
+    agent: "build",
+    model: { providerID: "test", id: "m1" },
+    system: [],
+    messages: [],
+    tools: {},
+    options: {},
+  }
+}
+
+/** Runs fn with a private flush-lock dir so tests never touch ~/.kratos. */
+function withTestLockDir(fn: () => Promise<void>): Promise<void> {
+  const lockDir = mkdtempSync(path.join(tmpdir(), "kratos-locktest-"))
+  __setLockDirForTests(lockDir)
+  return fn().finally(() => {
+    __setLockDirForTests(null)
+    rmSync(lockDir, { recursive: true, force: true })
+  })
+}
+
+test("setup registers the compaction hook with default options", async () => {
+  __setKratosForTests(fakeKratos().client)
+  const { ctx, sessionHooks } = makeCtx()
+  await pluginDefault.setup(ctx)
+  assert.equal(sessionHooks.get("compaction")?.length, 1)
+})
+
+test("compaction hook fires a session-end capture with a 30s timeout", async () => {
+  await withTestLockDir(async () => {
+    const fake = fakeKratos()
+    __setKratosForTests(fake.client)
+    const { ctx, sessionHooks } = makeCtx()
+    await pluginDefault.setup(ctx)
+    for (const cb of sessionHooks.get("compaction") ?? []) {
+      await cb(compactionEvent("s1"))
+    }
+    await flush()
+    assert.equal(fake.captureCalls.length, 1)
+    assert.equal(fake.captureCalls[0].event, "session-end")
+    assert.deepEqual(fake.captureCalls[0].payload, {})
+    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", timeoutMs: 30000 })
+  })
+})
+
+test("compaction flush is fire-and-forget: the hook returns before capture completes", async () => {
+  await withTestLockDir(async () => {
+    let releaseCapture!: () => void
+    const gate = new Promise<void>((resolve) => {
+      releaseCapture = resolve
+    })
+    const fake = fakeKratos({ capture: async () => { await gate; return "" } })
+    __setKratosForTests(fake.client)
+    const { ctx, sessionHooks } = makeCtx()
+    await pluginDefault.setup(ctx)
+    for (const cb of sessionHooks.get("compaction") ?? []) {
+      await cb(compactionEvent("s1"))
+    }
+    await flush(20)
+    assert.equal(fake.captureCalls.length, 1) // started, still blocked on the gate
+    releaseCapture()
+    await flush(20)
+  })
+})
+
+test("session.idle events trigger a debounced session-end capture", async () => {
+  await withTestLockDir(async () => {
+    const fake = fakeKratos()
+    __setKratosForTests(fake.client)
+    const { ctx, pushEvent } = makeCtx({ idleDebounceMinutes: 0 })
+    await pluginDefault.setup(ctx)
+    pushEvent({ type: "session.idle", data: { sessionID: "s1" } })
+    await flush(100)
+    assert.equal(fake.captureCalls.length, 1)
+    assert.equal(fake.captureCalls[0].event, "session-end")
+    assert.deepEqual(fake.captureCalls[0].payload, {})
+    assert.deepEqual(fake.captureCalls[0].args, { cwd: "/proj", timeoutMs: 30000 })
+  })
+})
+
+test("summary: false disables the compaction hook and idle handling", async () => {
+  const fake = fakeKratos()
+  __setKratosForTests(fake.client)
+  const { ctx, sessionHooks, pushEvent } = makeCtx({ summary: false })
+  await pluginDefault.setup(ctx)
+  assert.equal(sessionHooks.get("compaction"), undefined)
+  pushEvent({ type: "session.idle", data: { sessionID: "s1" } })
+  await flush(100)
+  assert.equal(fake.captureCalls.length, 0)
+})
+
+test("cleanup flushes armed sessions instead of dropping them", async () => {
+  await withTestLockDir(async () => {
+    const fake = fakeKratos()
+    __setKratosForTests(fake.client)
+    // Large debounce keeps the session armed (timer never fires on its own):
+    // the cleanup path must be what flushes it.
+    const { ctx, pushEvent } = makeCtx({ idleDebounceMinutes: 60 })
+    const cleanup = (await pluginDefault.setup(ctx)) as () => Promise<void>
+    pushEvent({ type: "session.idle", data: { sessionID: "s1" } })
+    await flush(20)
+    await cleanup()
+    await flush(20)
+    assert.equal(fake.captureCalls.length, 1)
+    assert.equal(fake.captureCalls[0].event, "session-end")
+  })
 })

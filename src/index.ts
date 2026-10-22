@@ -1,8 +1,11 @@
 import { Plugin } from "@opencode/plugin"
+import { homedir } from "node:os"
+import path from "node:path"
 import { resolveOptions } from "./config.ts"
 import { resolveKratos } from "./kratos.ts"
 import type { Kratos } from "./kratos.ts"
 import { translateToolEvent } from "./translate.ts"
+import { FlushScheduler } from "./summary.ts"
 
 const CONTEXT_CACHE_MAX = 100
 
@@ -12,6 +15,15 @@ let kratosOverride: Kratos | null | undefined = undefined
 
 export function __setKratosForTests(client: Kratos | null): void {
   kratosOverride = client
+}
+
+/** Test-only seam: overrides the flush-lock directory so unit tests never
+ * touch ~/.kratos (a crashed test run would otherwise leave a stale lock that
+ * silences flushes for 60s). Undefined means "production mode". */
+let lockDirOverride: string | undefined = undefined
+
+export function __setLockDirForTests(dir: string | null): void {
+  lockDirOverride = dir ?? undefined
 }
 
 /** Resolves a session's project directory, or undefined when the session
@@ -133,7 +145,59 @@ export default Plugin.define({
       log("tool capture hook registered")
     }
 
+    // --- Session summaries (Claude Code Stop/SessionEnd equivalent) ---
+    // `session.idle` events arm a per-session debounce; compaction (context
+    // rollover) flushes immediately. Flushes are serialized per project via a
+    // lock file so parallel OpenCode instances never double-summarize.
+    let cleanupSummary: (() => Promise<void>) | undefined
+    if (opts.summary) {
+      const scheduler = new FlushScheduler({
+        debounceMs: opts.idleDebounceMinutes * 60_000,
+        lockDir: lockDirOverride ?? path.join(homedir(), ".kratos", "opencode-kratos", "locks"),
+        onFlush: async (sessionID, cwd, source) => {
+          log(`session summary flush (${source}) for ${sessionID}`)
+          const kratos = await kratosPromise
+          if (!kratos) return
+          await kratos.capture("session-end", {}, { cwd, timeoutMs: 30_000 })
+        },
+      })
+
+      registrations.push(
+        await ctx.session.hook("compaction", (event) => {
+          // Fire-and-forget: compaction must never block on the 30s capture.
+          void wrap(async () => {
+            const cwd = await sessionCwd(ctx.session.get, event.sessionID)
+            if (!cwd) return
+            await scheduler.flushNow(event.sessionID, cwd, "compaction")
+          })
+        }),
+      )
+
+      const controller = new AbortController()
+      void (async () => {
+        try {
+          for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
+            if ((event as { type?: string }).type !== "session.idle") continue
+            const sessionID = (event as { data?: { sessionID?: unknown } }).data?.sessionID
+            if (typeof sessionID !== "string") continue
+            const cwd = await sessionCwd(ctx.session.get, sessionID)
+            if (cwd) scheduler.onIdle(sessionID, cwd)
+          }
+        } catch {
+          // Stream aborted or failed — summaries just stop arming.
+        }
+      })()
+
+      cleanupSummary = async () => {
+        controller.abort()
+        await scheduler.flushPending("cleanup")
+        scheduler.dispose()
+      }
+      log("session summary scheduler armed")
+    }
+
     return async () => {
+      await cleanupSummary?.()
       for (const registration of registrations) {
         await registration.dispose()
       }
